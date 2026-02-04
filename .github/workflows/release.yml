@@ -1,0 +1,27 @@
+name: release
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+      - name: Build
+        run: swift build -c release
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp .build/release/sweetdeck dist/sweetdeck
+          (cd dist && zip -r sweetdeck-${{ github.ref_name }}-macos.zip sweetdeck)
+      - name: Upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+
