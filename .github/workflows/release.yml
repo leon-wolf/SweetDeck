@@ -1,15 +1,17 @@
 name: release
 
 on:
-  workflow_dispatch:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.0"
@@ -20,8 +22,29 @@ jobs:
           mkdir -p dist
           cp .build/release/sweetdeck dist/sweetdeck
           (cd dist && zip -r sweetdeck-${{ github.ref_name }}-macos.zip sweetdeck)
+          shasum -a 256 dist/sweetdeck-${{ github.ref_name }}-macos.zip > dist/sweetdeck-${{ github.ref_name }}-macos.zip.sha256
       - name: Upload asset
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*.sha256
+      - name: Update Homebrew formula
+        run: |
+          ZIP="dist/sweetdeck-${{ github.ref_name }}-macos.zip"
+          SHA=$(cut -d " " -f1 "${ZIP}.sha256")
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          VERSION="${{ github.ref_name }}"
+          VERSION_NO_V="${VERSION#v}"
 
+          sed -i '' "s#https://github.com/REPLACE_OWNER/REPLACE_REPO#https://github.com/${OWNER}/${REPO}#g" Formula/sweetdeck.rb
+          sed -i '' "s#https://github.com/REPLACE_OWNER/REPLACE_REPO/releases/download/v[0-9.]\\+/sweetdeck-v[0-9.]+-macos.zip#https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/sweetdeck-${VERSION}-macos.zip#g" Formula/sweetdeck.rb
+          sed -i '' "s#sha256 \".*\"#sha256 \"${SHA}\"#g" Formula/sweetdeck.rb
+          sed -i '' "s#version \".*\"#version \"${VERSION_NO_V}\"#g" Formula/sweetdeck.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/sweetdeck.rb
+          git commit -m "chore: update formula for ${VERSION}"
+          git push
