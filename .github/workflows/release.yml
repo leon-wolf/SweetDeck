@@ -26,12 +26,15 @@ jobs:
           cp .build/release/sweetdeck dist/sweetdeck
           (cd dist && zip -r sweetdeck-${{ github.ref_name }}-macos.zip sweetdeck)
           shasum -a 256 dist/sweetdeck-${{ github.ref_name }}-macos.zip > dist/sweetdeck-${{ github.ref_name }}-macos.zip.sha256
-      - name: Upload asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.zip
-            dist/*.sha256
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --notes ""
+          fi
+          gh release upload "$TAG" dist/*.zip dist/*.sha256 --clobber
       - name: Update Homebrew formula
         run: |
           ZIP="dist/sweetdeck-${{ github.ref_name }}-macos.zip"
