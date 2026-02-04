@@ -44,10 +44,10 @@ jobs:
           VERSION="${{ github.ref_name }}"
           VERSION_NO_V="${VERSION#v}"
 
-          sed -i '' "s#https://github.com/REPLACE_OWNER/REPLACE_REPO#https://github.com/${OWNER}/${REPO}#g" Formula/sweetdeck.rb
-          sed -i '' "s#https://github.com/REPLACE_OWNER/REPLACE_REPO/releases/download/v[0-9.]\\+/sweetdeck-v[0-9.]+-macos.zip#https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/sweetdeck-${VERSION}-macos.zip#g" Formula/sweetdeck.rb
+          sed -i '' "s#https://github.com/[^/]+/[^/]+#https://github.com/${OWNER}/${REPO}#g" Formula/sweetdeck.rb
+          sed -i '' "s#v__VERSION__#${VERSION}#g" Formula/sweetdeck.rb
           sed -i '' "s#sha256 \".*\"#sha256 \"${SHA}\"#g" Formula/sweetdeck.rb
-          sed -i '' "s#version \".*\"#version \"${VERSION_NO_V}\"#g" Formula/sweetdeck.rb
+          sed -i '' "s#__VERSION_NO_V__#${VERSION_NO_V}#g" Formula/sweetdeck.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
