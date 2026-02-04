@@ -53,4 +53,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/sweetdeck.rb
           git commit -m "chore: update formula for ${VERSION}"
-          git push
+          git push origin HEAD:${{ github.event.repository.default_branch }}
