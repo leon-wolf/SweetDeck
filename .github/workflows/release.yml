@@ -35,7 +35,7 @@ jobs:
             gh release create "$TAG" --title "$TAG" --notes ""
           fi
           gh release upload "$TAG" dist/*.zip dist/*.sha256 --clobber
-      - name: Update Homebrew formula
+      - name: Generate Homebrew formula
         run: |
           ZIP="dist/sweetdeck-${{ github.ref_name }}-macos.zip"
           SHA=$(cut -d " " -f1 "${ZIP}.sha256")
@@ -44,16 +44,16 @@ jobs:
           VERSION="${{ github.ref_name }}"
           VERSION_NO_V="${VERSION#v}"
 
-          sed -i '' "s#https://github.com/[^/]+/[^/]+#https://github.com/${OWNER}/${REPO}#g" Formula/sweetdeck.rb
+          cp Formula/sweetdeck.rb.template Formula/sweetdeck.rb
+          sed -i '' "s#REPLACE_OWNER#${OWNER}#g" Formula/sweetdeck.rb
+          sed -i '' "s#REPLACE_REPO#${REPO}#g" Formula/sweetdeck.rb
           sed -i '' "s#v__VERSION__#${VERSION}#g" Formula/sweetdeck.rb
-          sed -i '' "s#sha256 \".*\"#sha256 \"${SHA}\"#g" Formula/sweetdeck.rb
+          sed -i '' "s#__SHA256__#${SHA}#g" Formula/sweetdeck.rb
           sed -i '' "s#__VERSION_NO_V__#${VERSION_NO_V}#g" Formula/sweetdeck.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/sweetdeck.rb
-          git commit -m "chore: update formula for ${VERSION}"
-          git push origin HEAD:${{ github.event.repository.default_branch }}
+          # Do not commit the generated formula back to this repo.
       - name: Push formula to tap repo
         env:
           TAP_REPO: leon-wolf/homebrew-sweetdeck

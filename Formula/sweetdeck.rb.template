@@ -1,0 +1,15 @@
+class Sweetdeck < Formula
+  desc "FlowDeck-like CLI for Xcode builds and simulator workflows"
+  homepage "https://github.com/REPLACE_OWNER/REPLACE_REPO"
+  url "https://github.com/REPLACE_OWNER/REPLACE_REPO/releases/download/v__VERSION__/sweetdeck-v__VERSION__-macos.zip"
+  sha256 "__SHA256__"
+  version "__VERSION_NO_V__"
+
+  def install
+    bin.install "sweetdeck"
+  end
+
+  test do
+    system "#{bin}/sweetdeck", "--version"
+  end
+end
