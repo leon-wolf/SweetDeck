@@ -54,3 +54,21 @@ jobs:
           git add Formula/sweetdeck.rb
           git commit -m "chore: update formula for ${VERSION}"
           git push origin HEAD:${{ github.event.repository.default_branch }}
+      - name: Push formula to tap repo
+        env:
+          TAP_REPO: leon-wolf/homebrew-sweetdeck
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "Missing HOMEBREW_TAP_TOKEN secret. Create a fine-grained PAT with Contents: Read and write on ${TAP_REPO} and add it as a repo secret."
+            exit 1
+          fi
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git /tmp/tap
+          mkdir -p /tmp/tap/Formula
+          cp Formula/sweetdeck.rb /tmp/tap/Formula/sweetdeck.rb
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/sweetdeck.rb
+          git commit -m "Update sweetdeck formula for ${{ github.ref_name }}" || true
+          git push
