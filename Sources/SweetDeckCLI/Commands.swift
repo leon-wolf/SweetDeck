@@ -26,7 +26,7 @@ struct Init: ParsableCommand {
     var destination: String?
 
     @Option(name: .customLong("derived-data-path"), help: "Derived data path.")
-    var derivedDataPath: String = ".sweetdeck/DerivedData"
+    var derivedDataPath: String?
 
     @Option(name: .customLong("xcodebuild-arg"), parsing: .unconditionalSingleValue, help: "Additional xcodebuild argument (repeatable).")
     var xcodebuildArg: [String] = []
@@ -39,9 +39,6 @@ struct Init: ParsableCommand {
 
     @Option(name: .customLong("app-env"), parsing: .unconditionalSingleValue, help: "App environment variable KEY=VALUE (repeatable).")
     var appEnv: [String] = []
-
-    @Flag(name: .customLong("non-interactive"), help: "Fail instead of prompting when missing values.")
-    var nonInteractive: Bool = false
 
     func run() throws {
         let runtime = global.makeRuntime()
@@ -73,8 +70,7 @@ struct Init: ParsableCommand {
                     xcodebuildArgs: xcodebuildArg,
                     bundleId: bundleId,
                     appArgs: appArg,
-                    appEnv: env,
-                    nonInteractive: nonInteractive
+                    appEnv: env
                 )
             )
 
@@ -534,6 +530,8 @@ struct Apps: ParsableCommand {
             let devices = try runtime.simctl.listDevices(cwd: cwd)
             if let dev = devices.first(where: { $0.name == provided }) { return dev.udid }
             if let dev = devices.first(where: { $0.name.localizedCaseInsensitiveContains(provided) }) { return dev.udid }
+            if let dev = devices.first(where: { $0.udid == provided }) { return dev.udid }
+            if let dev = devices.first(where: { $0.udid.localizedCaseInsensitiveContains(provided) }) { return dev.udid }
             throw SweetDeckError(code: .simctlFailed, message: "Simulator not found", details: ["simulator": provided])
         }
 
@@ -546,9 +544,118 @@ struct Apps: ParsableCommand {
 struct Simulator: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage simulators via simctl.",
-        subcommands: [List.self, Boot.self, Shutdown.self, Create.self, Delete.self, Prune.self, DeviceTypes.self, Runtimes.self, Location.self, Media.self]
+        subcommands: [List.self, Setup.self, Boot.self, Shutdown.self, Create.self, Delete.self, Prune.self, DeviceTypes.self, Runtimes.self, Location.self, Media.self]
     )
     func run() throws {}
+
+    struct Setup: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Pick a simulator, boot it, and optionally save destination to config.")
+
+        @OptionGroup var global: GlobalOptions
+
+        @Option(help: "Simulator name or UDID. Defaults to best available iPhone simulator.")
+        var simulator: String?
+
+        @Flag(inversion: .prefixedNo, help: "Open Simulator.app after setup.")
+        var open: Bool = true
+
+        @Flag(inversion: .prefixedNo, help: "Save destination to config.json.")
+        var writeConfig: Bool = true
+
+        func run() throws {
+            let runtime = global.makeRuntime()
+            let cwd = runtime.configLoaderForcedCwd()
+
+            do {
+                let devices = try runtime.simctl.listDevices(cwd: cwd)
+                let selected = try resolveSimulatorCandidate(devices: devices, query: simulator)
+                let destination = "platform=iOS Simulator,id=\(selected.udid)"
+
+                if selected.state?.caseInsensitiveCompare("Booted") != .orderedSame {
+                    _ = try runtime.simctl.boot(simulator: selected.udid, cwd: cwd)
+                }
+
+                if open {
+                    _ = try runtime.simctl.openSimulatorApp(cwd: cwd)
+                }
+
+                if writeConfig {
+                    let loaded = try runtime.configLoader.load(from: cwd)
+                    var updated = loaded.config
+                    updated.destination = destination
+                    if let path = loaded.configPath {
+                        let data = try SweetDeckJSON.encodePretty(updated)
+                        try runtime.fs.writeAtomic(data: data, to: path)
+                        runtime.console.info("Updated destination in \(path)")
+                    } else {
+                        runtime.console.warn("No config path was resolved; skipping config update.")
+                    }
+                }
+
+                if runtime.console.outputFormat == .json {
+                    struct Details: Encodable {
+                        var name: String
+                        var udid: String
+                        var runtime: String?
+                        var destination: String
+                        var wroteConfig: Bool
+                    }
+                    try finishJSONSuccess(
+                        "Simulator ready",
+                        details: Details(
+                            name: selected.name,
+                            udid: selected.udid,
+                            runtime: selected.runtime,
+                            destination: destination,
+                            wroteConfig: writeConfig
+                        )
+                    )
+                }
+
+                runtime.console.info("Using simulator: \(selected.name) [\(selected.udid)]")
+                runtime.console.info("Destination: \(destination)")
+            } catch {
+                let e = mapError(error)
+                if runtime.console.outputFormat == .json { try finishJSONError(e) }
+                runtime.console.error(e.description)
+                throw ExitCode(Int32(e.code.rawValue))
+            }
+        }
+
+        private func resolveSimulatorCandidate(devices: [SweetDeckSimulatorDevice], query: String?) throws -> SweetDeckSimulatorDevice {
+            let available = devices.filter { $0.isAvailable != false }
+            guard !available.isEmpty else {
+                throw SweetDeckError(code: .simctlFailed, message: "No available simulators found")
+            }
+
+            if let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let exact = available.first(where: { $0.udid == trimmed || $0.name == trimmed }) {
+                    return exact
+                }
+                if let contains = available.first(where: { $0.udid.localizedCaseInsensitiveContains(trimmed) || $0.name.localizedCaseInsensitiveContains(trimmed) }) {
+                    return contains
+                }
+                throw SweetDeckError(code: .simctlFailed, message: "Simulator not found", details: ["simulator": trimmed])
+            }
+
+            let sorted = available.sorted {
+                if $0.name == $1.name { return ($0.runtime ?? "") > ($1.runtime ?? "") }
+                return $0.name < $1.name
+            }
+
+            if let bootedPhone = sorted.first(where: { $0.state?.caseInsensitiveCompare("Booted") == .orderedSame && $0.name.localizedCaseInsensitiveContains("iphone") }) {
+                return bootedPhone
+            }
+            if let booted = sorted.first(where: { $0.state?.caseInsensitiveCompare("Booted") == .orderedSame }) {
+                return booted
+            }
+            if let iphone = sorted.first(where: { $0.name.localizedCaseInsensitiveContains("iphone") }) {
+                return iphone
+            }
+            return sorted[0]
+        }
+    }
 
     struct List: ParsableCommand {
         @OptionGroup var global: GlobalOptions

@@ -20,6 +20,7 @@ public protocol SweetDeckSimulatorControlling {
     func setLocation(simulator: String, latitude: String, longitude: String, cwd: String) throws -> SweetDeckRunResult
     func addMedia(simulator: String, paths: [String], cwd: String) throws -> SweetDeckRunResult
     func logStream(simulatorUDID: String, style: String, level: String, predicate: String?, cwd: String) throws -> SweetDeckRunResult
+    func openSimulatorApp(cwd: String) throws -> SweetDeckRunResult
 }
 
 public final class SweetDeckSimctlClient: SweetDeckSimulatorControlling {
@@ -144,6 +145,15 @@ public final class SweetDeckSimctlClient: SweetDeckSimulatorControlling {
             args += ["--predicate", predicate]
         }
         return try runSimctl(args: args, cwd: cwd, stream: true)
+    }
+
+    public func openSimulatorApp(cwd: String) throws -> SweetDeckRunResult {
+        try process.runStreaming(
+            SweetDeckCommand(executable: "/usr/bin/open", arguments: ["-a", "Simulator"]),
+            cwd: cwd,
+            streamToStdout: false,
+            streamToStderr: false
+        )
     }
 
     private func runSimctl(args: [String], cwd: String, stream: Bool, env: [String: String] = [:]) throws -> SweetDeckRunResult {

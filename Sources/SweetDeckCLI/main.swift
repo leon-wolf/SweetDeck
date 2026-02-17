@@ -73,7 +73,7 @@ struct GlobalOptions: ParsableArguments {
     @Option(help: "Override scheme for this invocation.")
     var scheme: String?
 
-    @Flag(name: .customLong("pick-scheme"), help: "Prompt to pick a scheme for this invocation.")
+    @Flag(name: .customLong("pick-scheme"), help: "Deprecated interactive flag. Use --scheme <name>.")
     var pickScheme: Bool = false
 
     func makeRuntime() -> SweetDeckRuntime {

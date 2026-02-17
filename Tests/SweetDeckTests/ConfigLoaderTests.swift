@@ -84,6 +84,25 @@ final class ConfigLoaderTests: XCTestCase {
         XCTAssertEqual(ctx.scheme, "A")
     }
 
+    func testDefaultDestinationUsesGenericIPhoneMatcher() throws {
+        let fs = SweetDeckFileSystem()
+        let tmp = try makeTempDir()
+        defer { try? fs.removeItem(at: tmp) }
+
+        let cfg = SweetDeckConfig(
+            project: .init(path: "App.xcodeproj", type: .xcodeproj),
+            scheme: "App"
+        )
+        let path = fs.absolutePath(".sweetdeck/config.json", relativeTo: tmp)
+        try fs.createDirectory(at: fs.absolutePath(".sweetdeck", relativeTo: tmp))
+        try fs.writeAtomic(data: SweetDeckJSON.encodePretty(cfg), to: path)
+
+        let loader = SweetDeckConfigLoader(fs: fs, console: SweetDeckConsole(outputFormat: .human, verbose: false, quiet: true), forcedConfigPath: nil)
+        let loaded = try loader.load(from: tmp)
+        let ctx = try loader.resolveContext(loaded: loaded, cwd: tmp, overrides: SweetDeckConfig())
+        XCTAssertEqual(ctx.destination, "platform=iOS Simulator,name=iPhone")
+    }
+
     private func makeTempDir() throws -> String {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("sweetdeck-tests-\(UUID().uuidString)", isDirectory: true)

@@ -52,11 +52,26 @@ This creates `.sweetdeck/config.json` and `.sweetdeck/DerivedData` (default).
 ### Init options
 
 ```sh
-# pick default scheme + simulator interactively
-sweetdeck init
-
 # set schemes and default scheme explicitly
 sweetdeck init --schemes App --schemes App-Staging --scheme App
+
+# set simulator destination explicitly
+sweetdeck init --destination "platform=iOS Simulator,name=iPhone 16"
+```
+
+Note: SweetDeck is non-interactive. Use explicit flags when you need a specific scheme or destination.
+
+## Simulator setup (quick)
+
+```sh
+# auto-pick best available simulator, boot it, and write destination to config
+sweetdeck simulator setup
+
+# target a specific simulator by name or UDID
+sweetdeck simulator setup --simulator "iPhone 16"
+
+# setup without mutating config
+sweetdeck simulator setup --no-write-config
 ```
 
 ## Usage
@@ -72,7 +87,7 @@ sweetdeck logs
 ### Common flags
 
 - `--scheme <name>`: override scheme for this invocation
-- `--pick-scheme`: prompt to pick a scheme
+- `--pick-scheme`: deprecated (interactive mode removed); use `--scheme`
 - `--output json`: machine-readable output
 - `--verbose`: show tool output (xcodebuild, simctl, devicectl)
 

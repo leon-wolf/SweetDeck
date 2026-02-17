@@ -11,12 +11,11 @@ public struct SweetDeckInitOptions: Sendable {
     public var pickScheme: Bool
     public var configuration: String
     public var destination: String?
-    public var derivedDataPath: String
+    public var derivedDataPath: String?
     public var xcodebuildArgs: [String]
     public var bundleId: String?
     public var appArgs: [String]
     public var appEnv: [String: String]
-    public var nonInteractive: Bool
 
     public init(
         projectPath: String?,
@@ -26,12 +25,11 @@ public struct SweetDeckInitOptions: Sendable {
         pickScheme: Bool,
         configuration: String,
         destination: String?,
-        derivedDataPath: String,
+        derivedDataPath: String?,
         xcodebuildArgs: [String],
         bundleId: String?,
         appArgs: [String],
-        appEnv: [String: String],
-        nonInteractive: Bool
+        appEnv: [String: String]
     ) {
         self.projectPath = projectPath
         self.projectType = projectType
@@ -45,7 +43,6 @@ public struct SweetDeckInitOptions: Sendable {
         self.bundleId = bundleId
         self.appArgs = appArgs
         self.appEnv = appEnv
-        self.nonInteractive = nonInteractive
     }
 }
 
@@ -60,7 +57,7 @@ public final class SweetDeckUseCases: @unchecked Sendable {
         let fs = runtime.fs
         let console = runtime.console
 
-        let projectPath = try resolveProjectPath(cwd: cwd, provided: options.projectPath, nonInteractive: options.nonInteractive)
+        let projectPath = try resolveProjectPath(cwd: cwd, provided: options.projectPath)
         let projectType = options.projectType ?? inferProjectType(from: projectPath)
 
         let projectRef = SweetDeckProjectRef(path: projectPath, type: projectType)
@@ -69,18 +66,16 @@ public final class SweetDeckUseCases: @unchecked Sendable {
 
         let overrideScheme = options.scheme?.trimmingCharacters(in: .whitespacesAndNewlines)
         var schemesList = options.schemes
-        var pickedDefault: String?
         if schemesList.isEmpty {
             if !discoveredSchemes.isEmpty {
                 schemesList = discoveredSchemes
             } else if let overrideScheme {
                 schemesList = [overrideScheme]
             }
+        }
 
-            if options.pickScheme, overrideScheme == nil {
-                let picked = try promptScheme(from: schemesList, nonInteractive: options.nonInteractive)
-                pickedDefault = picked
-            }
+        if options.pickScheme {
+            console.warn("--pick-scheme is interactive and has been removed; using resolved/default scheme.")
         }
 
         if schemesList.isEmpty {
@@ -97,10 +92,6 @@ public final class SweetDeckUseCases: @unchecked Sendable {
         let defaultScheme: String
         if let overrideScheme, !overrideScheme.isEmpty {
             defaultScheme = overrideScheme
-        } else if let pickedDefault {
-            defaultScheme = pickedDefault
-        } else if !options.nonInteractive {
-            defaultScheme = try promptScheme(from: schemesList, nonInteractive: options.nonInteractive)
         } else {
             defaultScheme = schemesList.first!
         }
@@ -108,16 +99,18 @@ public final class SweetDeckUseCases: @unchecked Sendable {
         let destination: String
         if let provided = options.destination?.trimmingCharacters(in: .whitespacesAndNewlines), !provided.isEmpty {
             destination = provided
-        } else if options.nonInteractive {
-            destination = "platform=iOS Simulator,name=iPhone 15"
         } else {
-            destination = try promptSimulatorDestination(cwd: cwd)
+            destination = try preferredSimulatorDestination(cwd: cwd)
         }
 
         if !schemesList.contains(defaultScheme) {
             console.warn("Default scheme '\(defaultScheme)' not in schemes list; adding it.")
             schemesList.append(defaultScheme)
         }
+
+        let resolvedDerivedData = options.derivedDataPath
+            ?? runtime.configLoader.derivedDataPathFromSettings(project: projectRef, cwd: cwd)
+            ?? ".sweetdeck/DerivedData"
 
         let config = SweetDeckConfig(
             project: projectRef,
@@ -126,7 +119,7 @@ public final class SweetDeckUseCases: @unchecked Sendable {
             defaultScheme: defaultScheme,
             configuration: options.configuration,
             destination: destination,
-            derivedDataPath: options.derivedDataPath,
+            derivedDataPath: resolvedDerivedData,
             xcodebuildArguments: options.xcodebuildArgs,
             appLaunch: SweetDeckAppLaunch(bundleIdentifier: options.bundleId, arguments: options.appArgs, environment: options.appEnv)
         )
@@ -150,20 +143,8 @@ public final class SweetDeckUseCases: @unchecked Sendable {
     ) throws -> String? {
         if let overrideScheme, !overrideScheme.isEmpty { return overrideScheme }
         guard pickScheme else { return nil }
-        guard !nonInteractive else {
-            throw SweetDeckError(code: .config, message: "--pick-scheme requires interactive input")
-        }
-
-        let loaded = try runtime.configLoader.load(from: cwd)
-        var available = (loaded.config.schemes ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if available.isEmpty, let project = loaded.config.project {
-            let listing = try runtime.xcodebuild.list(project: project, cwd: cwd)
-            available = listing.schemes
-        }
-        guard !available.isEmpty else {
-            throw SweetDeckError(code: .config, message: "No schemes available to pick. Set schemes in config or pass --scheme.")
-        }
-        return try promptScheme(from: available, nonInteractive: nonInteractive)
+        _ = nonInteractive
+        throw SweetDeckError(code: .usage, message: "--pick-scheme requires interactive mode, which is no longer supported. Pass --scheme <name> instead.")
     }
 
     public func context(cwd: String, refresh: Bool, overrides: SweetDeckConfig) throws -> (SweetDeckResolvedContext, [String]?, Any?) {
@@ -269,8 +250,11 @@ public final class SweetDeckUseCases: @unchecked Sendable {
         }
 
         var buildCtx = ctx
+        let simulatorOverrideUDID = try device.flatMap { try resolveSimulatorUDID(cwd: cwd, provided: $0) }
         if let device, !device.isEmpty {
-            if SweetDeckDestinationResolver.looksLikeUUID(device) {
+            if let simUDID = simulatorOverrideUDID {
+                buildCtx.destination = "id=\(simUDID)"
+            } else if SweetDeckDestinationResolver.looksLikeUUID(device) {
                 buildCtx.destination = "id=\(device)"
             } else {
                 buildCtx.destination = "name=\(device)"
@@ -297,16 +281,27 @@ public final class SweetDeckUseCases: @unchecked Sendable {
             throw SweetDeckError(code: .config, message: "Missing bundle identifier. Set appLaunch.bundleIdentifier in config or pass --bundle-id.")
         }
 
-        if let device {
+        if let simUDID = simulatorOverrideUDID {
+            try ensureSimulatorBooted(cwd: cwd, udid: simUDID)
+            if reinstall {
+                runtime.console.info("Installing on simulator \(formatSimulatorName(cwd: cwd, udid: simUDID))")
+                _ = try runtime.simctl.installApp(simulatorUDID: simUDID, appPath: appPath, cwd: cwd)
+            }
+            runtime.console.info("Launching on simulator \(formatSimulatorName(cwd: cwd, udid: simUDID))")
+            _ = try runtime.simctl.launchApp(simulatorUDID: simUDID, bundleId: bundleId, args: ctx.appLaunch.arguments, env: ctx.appLaunch.environment, cwd: cwd)
+            runtime.state.recordSimulatorLaunch(cwd: cwd, state: SweetDeckSimulatorLaunchState(simulatorUDID: simUDID, bundleId: bundleId, timestamp: Date()))
+            return (SweetDeckBuildAppPath(appPath: appPath, bundleIdentifier: bundleId), ["simulatorUDID": simUDID])
+        } else if let device {
+            let resolvedDevice = try resolveDeviceIdentifier(cwd: cwd, provided: device)
             var details: Any?
             if reinstall {
-                runtime.console.info("Installing on device \(device)")
-                details = try runtime.devicectl.installApp(device: device, appPath: appPath, cwd: cwd)
+                runtime.console.info("Installing on device \(resolvedDevice)")
+                details = try runtime.devicectl.installApp(device: resolvedDevice, appPath: appPath, cwd: cwd)
             }
-            runtime.console.info("Launching on device \(device)")
-            let launchAny = try runtime.devicectl.launchApp(device: device, bundleId: bundleId, args: ctx.appLaunch.arguments, env: ctx.appLaunch.environment, cwd: cwd)
+            runtime.console.info("Launching on device \(resolvedDevice)")
+            let launchAny = try runtime.devicectl.launchApp(device: resolvedDevice, bundleId: bundleId, args: ctx.appLaunch.arguments, env: ctx.appLaunch.environment, cwd: cwd)
             if let pid = SweetDeckAnyJSONSearch.findFirstInt(launchAny, keys: ["pid", "processIdentifier", "processID"]) {
-                runtime.state.recordDeviceLaunch(cwd: cwd, state: SweetDeckDeviceLaunchState(device: device, bundleId: bundleId, pid: pid, timestamp: Date()))
+                runtime.state.recordDeviceLaunch(cwd: cwd, state: SweetDeckDeviceLaunchState(device: resolvedDevice, bundleId: bundleId, pid: pid, timestamp: Date()))
             }
             return (SweetDeckBuildAppPath(appPath: appPath, bundleIdentifier: bundleId), ["install": details as Any, "launch": launchAny as Any])
         } else {
@@ -318,6 +313,7 @@ public final class SweetDeckUseCases: @unchecked Sendable {
             }
             runtime.console.info("Launching on simulator \(formatSimulatorName(cwd: cwd, udid: udid))")
             _ = try runtime.simctl.launchApp(simulatorUDID: udid, bundleId: bundleId, args: ctx.appLaunch.arguments, env: ctx.appLaunch.environment, cwd: cwd)
+            runtime.state.recordSimulatorLaunch(cwd: cwd, state: SweetDeckSimulatorLaunchState(simulatorUDID: udid, bundleId: bundleId, timestamp: Date()))
             return (SweetDeckBuildAppPath(appPath: appPath, bundleIdentifier: bundleId), ["simulatorUDID": udid])
         }
     }
@@ -370,24 +366,38 @@ public final class SweetDeckUseCases: @unchecked Sendable {
     public func stop(cwd: String, overrides: SweetDeckConfig, device: String?, bundleIdOverride: String?, pid: Int?, kill: Bool) throws {
         let loaded = try runtime.configLoader.load(from: cwd)
         let ctx = try runtime.configLoader.resolveContext(loaded: loaded, cwd: cwd, overrides: overrides)
-        let bundleId = bundleIdOverride ?? ctx.appLaunch.bundleIdentifier
-        guard let bundleId, !bundleId.isEmpty else {
-            throw SweetDeckError(code: .config, message: "Missing bundle identifier. Set appLaunch.bundleIdentifier in config or pass --bundle-id.")
-        }
+        var bundleId = bundleIdOverride ?? ctx.appLaunch.bundleIdentifier
 
         if let device {
-            let effectivePID = pid ?? runtime.state.findPID(cwd: cwd, device: device, bundleId: bundleId)
-            guard let effectivePID else {
-                throw SweetDeckError(code: .devicectlFailed, message: "Device stop requires --pid (or a prior `sweetdeck run --device ...`)", details: ["bundleId": bundleId, "device": device])
+            guard let bundleId, !bundleId.isEmpty else {
+                throw SweetDeckError(code: .config, message: "Missing bundle identifier. Set appLaunch.bundleIdentifier in config or pass --bundle-id.")
             }
-            _ = try runtime.devicectl.terminate(device: device, pid: effectivePID, kill: kill, cwd: cwd)
+            let resolvedDevice = try resolveDeviceIdentifier(cwd: cwd, provided: device)
+            let effectivePID = pid ?? runtime.state.findPID(cwd: cwd, device: resolvedDevice, bundleId: bundleId)
+            guard let effectivePID else {
+                throw SweetDeckError(code: .devicectlFailed, message: "Device stop requires --pid (or a prior `sweetdeck run --device ...`)", details: ["bundleId": bundleId, "device": resolvedDevice])
+            }
+            _ = try runtime.devicectl.terminate(device: resolvedDevice, pid: effectivePID, kill: kill, cwd: cwd)
         } else {
+            if bundleId?.isEmpty != false {
+                bundleId = try resolveBundleIdFromBuildSettings(context: ctx, cwd: cwd)
+            }
+            if let bundleId, let lastDevice = runtime.state.findLastDeviceLaunch(cwd: cwd, bundleId: bundleId) {
+                _ = try runtime.devicectl.terminate(device: lastDevice.device, pid: lastDevice.pid, kill: kill, cwd: cwd)
+                return
+            }
             let udid = try runtime.simctl.resolveUDID(destination: ctx.destination, cwd: cwd)
+            if bundleId?.isEmpty != false {
+                bundleId = runtime.state.findLastSimulatorBundleId(cwd: cwd, simulatorUDID: udid)
+            }
+            guard let bundleId, !bundleId.isEmpty else {
+                throw SweetDeckError(code: .config, message: "Missing bundle identifier. Set appLaunch.bundleIdentifier in config, pass --bundle-id, or run `sweetdeck run` first.")
+            }
             _ = try runtime.simctl.terminateApp(simulatorUDID: udid, bundleId: bundleId, cwd: cwd)
         }
     }
 
-    private func resolveProjectPath(cwd: String, provided: String?, nonInteractive: Bool) throws -> String {
+    private func resolveProjectPath(cwd: String, provided: String?) throws -> String {
         let fs = runtime.fs
         if let provided {
             let abs = fs.absolutePath(provided, relativeTo: cwd)
@@ -405,15 +415,7 @@ public final class SweetDeckUseCases: @unchecked Sendable {
             return fs.absolutePath(proj, relativeTo: cwd)
         }
 
-        if nonInteractive {
-            throw SweetDeckError(code: .config, message: "Could not auto-detect .xcworkspace or .xcodeproj in \(cwd). Use --project-path.")
-        }
-
-        runtime.console.info("Enter project path (.xcworkspace or .xcodeproj): ")
-        guard let line = readLine(), !line.isEmpty else {
-            throw SweetDeckError(code: .config, message: "No project path provided")
-        }
-        return fs.absolutePath(line, relativeTo: cwd)
+        throw SweetDeckError(code: .config, message: "Could not auto-detect .xcworkspace or .xcodeproj in \(cwd). Use --project-path.")
     }
 
     private func inferProjectType(from path: String) -> SweetDeckProjectType {
@@ -431,33 +433,9 @@ public final class SweetDeckUseCases: @unchecked Sendable {
         return dict["CFBundleIdentifier"] as? String
     }
 
-    private func promptScheme(from schemes: [String], nonInteractive: Bool) throws -> String {
-        guard !schemes.isEmpty else {
-            throw SweetDeckError(code: .config, message: "No schemes available to select.")
-        }
-        if nonInteractive {
-            throw SweetDeckError(code: .config, message: "--pick-scheme requires interactive input")
-        }
-        let out = FileHandle.standardOutput
-        for (idx, scheme) in schemes.enumerated() {
-            out.write("[\(idx + 1)] \(scheme)\n".data(using: .utf8)!)
-        }
-        out.write("Select scheme [1-\(schemes.count)]: ".data(using: .utf8)!)
-        guard let line = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty else {
-            throw SweetDeckError(code: .config, message: "No scheme selected")
-        }
-        if let index = Int(line), index >= 1, index <= schemes.count {
-            return schemes[index - 1]
-        }
-        if let match = schemes.first(where: { $0.caseInsensitiveCompare(line) == .orderedSame }) {
-            return match
-        }
-        throw SweetDeckError(code: .config, message: "Invalid scheme selection")
-    }
-
-    private func promptSimulatorDestination(cwd: String) throws -> String {
+    private func preferredSimulatorDestination(cwd: String) throws -> String {
         let console = runtime.console
-        let fallback = "platform=iOS Simulator,name=iPhone 15"
+        let fallback = "platform=iOS Simulator,name=iPhone"
         let devices: [SweetDeckSimulatorDevice]
         do {
             devices = try runtime.simctl.listDevices(cwd: cwd)
@@ -473,32 +451,18 @@ public final class SweetDeckUseCases: @unchecked Sendable {
         }
 
         let sorted = available.sorted {
-            if $0.name == $1.name { return ($0.runtime ?? "") < ($1.runtime ?? "") }
+            if $0.name == $1.name { return ($0.runtime ?? "") > ($1.runtime ?? "") }
             return $0.name < $1.name
         }
 
-        let out = FileHandle.standardOutput
-        for (idx, device) in sorted.enumerated() {
-            let runtime = device.runtime ?? "Unknown Runtime"
-            let state = device.state.map { " \($0)" } ?? ""
-            out.write("[\(idx + 1)] \(device.name) — \(runtime)\(state) (\(device.udid))\n".data(using: .utf8)!)
-        }
-        out.write("Select simulator [1-\(sorted.count)]: ".data(using: .utf8)!)
-        guard let line = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty else {
-            throw SweetDeckError(code: .config, message: "No simulator selected")
-        }
+        let preferred =
+            sorted.first(where: { $0.state?.caseInsensitiveCompare("Booted") == .orderedSame && $0.name.localizedCaseInsensitiveContains("iPhone") })
+            ?? sorted.first(where: { $0.state?.caseInsensitiveCompare("Booted") == .orderedSame })
+            ?? sorted.first(where: { $0.name.localizedCaseInsensitiveContains("iPhone") })
+            ?? sorted.first
 
-        if let index = Int(line), index >= 1, index <= sorted.count {
-            let device = sorted[index - 1]
-            return "platform=iOS Simulator,id=\(device.udid)"
-        }
-        if let match = sorted.first(where: { $0.udid.caseInsensitiveCompare(line) == .orderedSame }) {
-            return "platform=iOS Simulator,id=\(match.udid)"
-        }
-        if let match = sorted.first(where: { $0.name.caseInsensitiveCompare(line) == .orderedSame }) {
-            return "platform=iOS Simulator,id=\(match.udid)"
-        }
-        throw SweetDeckError(code: .config, message: "Invalid simulator selection")
+        guard let preferred else { return fallback }
+        return "platform=iOS Simulator,id=\(preferred.udid)"
     }
 
     private func ensureSimulatorBooted(cwd: String, udid: String) throws {
@@ -514,6 +478,66 @@ public final class SweetDeckUseCases: @unchecked Sendable {
             return "\(device.name) (\(runtimeName)) [\(udid)]"
         }
         return udid
+    }
+
+    private func resolveSimulatorUDID(cwd: String, provided: String) throws -> String? {
+        let trimmed = provided.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let devices = try runtime.simctl.listDevices(cwd: cwd)
+        if let exact = devices.first(where: { $0.udid == trimmed }) { return exact.udid }
+        if let exact = devices.first(where: { $0.name == trimmed }) { return exact.udid }
+        if let match = devices.first(where: { $0.name.localizedCaseInsensitiveContains(trimmed) }) { return match.udid }
+        if let match = devices.first(where: { $0.udid.localizedCaseInsensitiveContains(trimmed) }) { return match.udid }
+        return nil
+    }
+
+    private func resolveDeviceIdentifier(cwd: String, provided: String) throws -> String {
+        let trimmed = provided.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return provided }
+
+        let any = try runtime.devicectl.listDevices(cwd: cwd)
+        let candidates = extractDeviceCandidates(from: any)
+        if let matched = matchDevice(candidates: candidates, provided: trimmed) {
+            return matched
+        }
+        return trimmed
+    }
+
+    private func extractDeviceCandidates(from any: Any) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        if let dict = any as? [String: Any] {
+            if dict["name"] != nil || dict["identifier"] != nil || dict["udid"] != nil || dict["deviceIdentifier"] != nil || dict["id"] != nil {
+                out.append(dict)
+            }
+            for (_, v) in dict {
+                out.append(contentsOf: extractDeviceCandidates(from: v))
+            }
+        } else if let arr = any as? [Any] {
+            for v in arr { out.append(contentsOf: extractDeviceCandidates(from: v)) }
+        }
+        return out
+    }
+
+    private func matchDevice(candidates: [[String: Any]], provided: String) -> String? {
+        func field(_ dict: [String: Any], _ key: String) -> String? {
+            dict[key] as? String
+        }
+        let keys = ["identifier", "udid", "deviceIdentifier", "id", "name"]
+        for dict in candidates {
+            for key in keys {
+                if let val = field(dict, key), val == provided {
+                    return field(dict, "identifier") ?? field(dict, "udid") ?? val
+                }
+            }
+        }
+        for dict in candidates {
+            for key in keys {
+                if let val = field(dict, key), val.localizedCaseInsensitiveContains(provided) {
+                    return field(dict, "identifier") ?? field(dict, "udid") ?? val
+                }
+            }
+        }
+        return nil
     }
 
     private func resolveBundleIdFromBuildSettings(context: SweetDeckResolvedContext, cwd: String) throws -> String? {
